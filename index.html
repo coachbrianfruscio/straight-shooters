@@ -1036,38 +1036,38 @@
           <div class="f-row">
             <div class="fg">
               <label>Child's First Name</label>
-              <input type="text" placeholder="First name" required>
+              <input type="text" name="first_name" id="reg-fname" placeholder="First name" required>
             </div>
             <div class="fg">
               <label>Child's Last Name</label>
-              <input type="text" placeholder="Last name" required>
+              <input type="text" name="last_name" id="reg-lname" placeholder="Last name" required>
             </div>
           </div>
 
           <div class="f-row">
             <div class="fg">
               <label>Parent / Guardian</label>
-              <input type="text" placeholder="Full name" required>
+              <input type="text" name="parent" id="reg-parent" placeholder="Full name" required>
             </div>
             <div class="fg">
               <label>Contact Phone</label>
-              <input type="tel" placeholder="(000) 000-0000" required>
+              <input type="tel" name="phone" id="reg-phone" placeholder="(000) 000-0000" required>
             </div>
           </div>
 
           <div class="fg">
             <label>Email Address</label>
-            <input type="email" placeholder="your@email.com" required>
+            <input type="email" name="email" id="reg-email" placeholder="your@email.com" required>
           </div>
 
           <div class="f-row">
             <div class="fg">
               <label>Child's Date of Birth</label>
-              <input type="date" required>
+              <input type="date" name="dob" id="reg-dob" required>
             </div>
             <div class="fg">
               <label>Grade in Fall 2026</label>
-              <select required>
+              <select name="grade" id="reg-grade" required>
                 <option value="">Select grade</option>
                 <option>3rd Grade</option>
                 <option>4th Grade</option>
@@ -1082,7 +1082,7 @@
 
           <div class="fg">
             <label>Camp Session</label>
-            <select required>
+            <select name="session" id="reg-session" required>
               <option value="">Select a session</option>
               <option>Clinic 1 &mdash; Jun 22&ndash;25, 2026, 5pm&ndash;7pm (Grades 4&ndash;9) &mdash; $120</option>
               <option>Clinic 2 &mdash; Jul 13&ndash;17, 2026, 9am&ndash;1pm (Grades 3&ndash;9) &mdash; $150</option>
@@ -1093,7 +1093,7 @@
           <div class="f-row">
             <div class="fg">
               <label>T-Shirt Size</label>
-              <select>
+              <select name="tshirt" id="reg-tshirt">
                 <option>Youth Small</option>
                 <option>Youth Medium</option>
                 <option>Youth Large</option>
@@ -1106,18 +1106,18 @@
             </div>
             <div class="fg">
               <label>Family Physician</label>
-              <input type="text" placeholder="Doctor's name">
+              <input type="text" name="physician" id="reg-physician" placeholder="Doctor's name">
             </div>
           </div>
 
           <div class="fg">
             <label>Mailing Address</label>
-            <input type="text" placeholder="Street, City, State, Zip">
+            <input type="text" name="address" id="reg-address" placeholder="Street, City, State, Zip">
           </div>
 
           <div class="fg">
             <label>Notes / Questions</label>
-            <textarea placeholder="Medical conditions, dietary needs, or any questions..."></textarea>
+            <textarea name="notes" id="reg-notes" placeholder="Medical conditions, dietary needs, or any questions..."></textarea>
           </div>
 
           <button type="submit" class="f-submit">&#x1F3C0; &nbsp;Submit Registration for Summer 2026</button>
@@ -1192,15 +1192,15 @@
         <br>
         <div class="fg">
           <label>Your Name</label>
-          <input type="text" placeholder="Enter your full name">
+          <input type="text" id="c-name" placeholder="Enter your full name">
         </div>
         <div class="fg">
           <label>Email Address</label>
-          <input type="email" placeholder="Enter your email">
+          <input type="email" id="c-email" placeholder="Enter your email">
         </div>
         <div class="fg">
           <label>Message</label>
-          <textarea placeholder="Your message, question, or inquiry..."></textarea>
+          <textarea id="c-message" placeholder="Your message, question, or inquiry..."></textarea>
         </div>
         <button class="btn-navy" onclick="sendMsg()">Send Message &rarr;</button>
       </div>
@@ -1380,10 +1380,35 @@ function toast(msg) {
 /* ‚îÄ‚îÄ FORM HANDLERS ‚îÄ‚îÄ */
 function submitReg(e) {
   e.preventDefault();
+  const f = e.target;
+  const g = n => (f.querySelector('[name="'+n+'"]') || {value:''}).value;
+  const lines = [
+    'CAMP REGISTRATION - Summer 2026',
+    '================================',
+    'Enfant: ' + g('first_name') + ' ' + g('last_name'),
+    'Parent / Tuteur: ' + g('parent'),
+    'Tel: ' + g('phone'),
+    'Email: ' + g('email'),
+    'Date de naissance: ' + g('dob'),
+    'Grade (Fall 2026): ' + g('grade'),
+    'Session: ' + g('session'),
+    'T-Shirt: ' + g('tshirt'),
+    'Medecin: ' + g('physician'),
+    'Adresse: ' + g('address'),
+    'Notes: ' + g('notes'),
+  ].join('\n');
+  const subj = encodeURIComponent('Inscription Camp - ' + g('first_name') + ' ' + g('last_name') + ' - Summer 2026');
+  window.open('mailto:bfruscio@cbury.org?subject=' + subj + '&body=' + encodeURIComponent(lines));
   toast('&#x1F3C0; Registration submitted! Coach Brian will contact you within 24 hours.');
   e.target.reset();
 }
 function sendMsg() {
+  const name = (document.getElementById('c-name') || {value:''}).value;
+  const email = (document.getElementById('c-email') || {value:''}).value;
+  const msg = (document.getElementById('c-message') || {value:''}).value;
+  const body = 'De: ' + name + '\nEmail: ' + email + '\n\nMessage:\n' + msg;
+  const subj = encodeURIComponent('Message de ' + name + ' - Straight Shooters');
+  window.open('mailto:bfruscio@cbury.org?subject=' + subj + '&body=' + encodeURIComponent(body));
   toast('&#x2709; Message sent! We\'ll get back to you soon.');
 }
 
