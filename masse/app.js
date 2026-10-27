@@ -50,14 +50,84 @@ const defaults = () => ({
   suppLog: {},
 });
 
+const normalize = d => {
+  const out = Object.assign(defaults(), d || {});
+  out.settings = Object.assign(defaults().settings, out.settings);
+  return out;
+};
+
 let db;
-try { db = Object.assign(defaults(), JSON.parse(localStorage.getItem(KEY)) || {}); }
+try { db = normalize(JSON.parse(localStorage.getItem(KEY))); }
 catch { db = defaults(); }
-db.settings = Object.assign(defaults().settings, db.settings);
+
+// Dans claude.ai (Artifact), les données vont dans le stockage `db` de l'artifact,
+// découpées en un document « profile » + un document par mois (limite de 256 Ko par document).
+const cloud = { col: null, written: new Map(), chains: new Map(), timer: null };
+
+function cloudDocs() {
+  const docs = { profile: { settings: db.settings, supps: db.supps } };
+  const month = name => docs['m-' + name] || (docs['m-' + name] = { meals: [], workouts: [], weights: [], photos: [], suppLog: {} });
+  for (const k of ['meals', 'workouts', 'weights', 'photos']) db[k].forEach(x => month(x.date.slice(0, 7))[k].push(x));
+  for (const [d, ids] of Object.entries(db.suppLog)) if (ids.length) month(d.slice(0, 7)).suppLog[d] = ids;
+  // Un mois vidé doit aussi être réécrit (vide)
+  for (const name of cloud.written.keys()) if (!docs[name]) docs[name] = { meals: [], workouts: [], weights: [], photos: [], suppLog: {} };
+  return docs;
+}
+
+function cloudFlush() {
+  for (const [name, body] of Object.entries(cloudDocs())) {
+    const json = JSON.stringify(body);
+    if (cloud.written.get(name) === json) continue;
+    cloud.written.set(name, json);
+    // Une écriture à la fois par document
+    const prev = cloud.chains.get(name) || Promise.resolve();
+    cloud.chains.set(name, prev.then(() => cloud.col.doc(name).set(body)).catch(e => {
+      cloud.written.delete(name);
+      toast(e && e.code === 'quota_exceeded' ? '⚠️ Stockage plein — exporte puis supprime d\'anciennes données' : '⚠️ Sauvegarde impossible, réessaie');
+    }));
+  }
+}
 
 function save() {
   try { localStorage.setItem(KEY, JSON.stringify(db)); }
-  catch { toast('⚠️ Stockage plein — exporte tes données'); }
+  catch { if (!cloud.col) toast('⚠️ Stockage plein — exporte tes données'); }
+  if (cloud.col) { clearTimeout(cloud.timer); cloud.timer = setTimeout(cloudFlush, 300); }
+}
+
+async function initCloud() {
+  if (!window.claude || !window.claude.use) return;
+  try {
+    const [cdb, user, assets, sample] = await Promise.all(['db', 'user', 'assets', 'sample'].map(n => claude.use(n).catch(() => null)));
+    assetsNs = assets;
+    if (sample) {
+      const lim = await sample.limits().catch(() => null);
+      if (lim && lim.images) sampleNs = sample;
+    }
+    if (cdb && user) {
+      const id = await user.id();
+      if (id) {
+        const col = cdb.collection('data/users/' + id);
+        const snap = await col.get();
+        if (!snap.empty) {
+          const merged = defaults();
+          merged.meals = []; merged.workouts = []; merged.weights = []; merged.photos = []; merged.suppLog = {};
+          for (const doc of snap.docs) {
+            const body = doc.data() || {};
+            cloud.written.set(doc.id, JSON.stringify(body));
+            if (doc.id === 'profile') { merged.settings = body.settings; merged.supps = body.supps || []; continue; }
+            for (const k of ['meals', 'workouts', 'weights', 'photos']) merged[k].push(...(body[k] || []));
+            Object.assign(merged.suppLog, body.suppLog || {});
+          }
+          db = normalize(merged);
+          cloud.col = col;
+        } else {
+          cloud.col = col;
+          cloudFlush(); // premier lancement : envoie les données locales (ou par défaut)
+        }
+      }
+    }
+  } catch { /* reste en mode local */ }
+  render();
 }
 const getApiKey = () => { try { return localStorage.getItem(KEY_API) || ''; } catch { return ''; } };
 const setApiKey = k => { try { k ? localStorage.setItem(KEY_API, k) : localStorage.removeItem(KEY_API); } catch {} };
@@ -87,11 +157,57 @@ const idb = (() => {
   };
 })();
 
+// Images : `assets` de l'artifact quand disponible (réf. « a:<id> »), sinon IndexedDB.
+let assetsNs = null;
+let sampleNs = null;
+
+function dataUrlToBlob(url) {
+  const [head, b64] = url.split(',');
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: head.match(/:(.*?);/)[1] });
+}
+
+async function putImage(dataUrl, prefix) {
+  if (assetsNs) {
+    try {
+      const r = await assetsNs.upload(dataUrlToBlob(dataUrl), { type: 'image/jpeg' });
+      return 'a:' + r.id;
+    } catch { /* repli sur IndexedDB */ }
+  }
+  const id = prefix + '-' + uid();
+  await idb.set(id, dataUrl);
+  imgCache.set(id, dataUrl);
+  return id;
+}
+
+function delImage(ref) {
+  if (!ref) return;
+  imgCache.delete(ref);
+  if (ref.startsWith('a:')) { if (assetsNs) assetsNs.delete(ref.slice(2)).catch(() => {}); }
+  else idb.del(ref).catch(() => {});
+}
+
 const imgCache = new Map();
 async function loadImg(id) {
   if (!id) return null;
+  if (id.startsWith('a:')) return '/_blob/' + id.slice(2);
   if (imgCache.has(id)) return imgCache.get(id);
   try { const v = await idb.get(id); imgCache.set(id, v); return v; } catch { return null; }
+}
+
+// Remplace confirm(), bloqué dans claude.ai
+function askConfirm(msg, okLabel = 'Supprimer') {
+  return new Promise(resolve => {
+    const box = $('#confirm');
+    $('#confirmMsg').textContent = msg;
+    $('#confirmOk').textContent = okLabel;
+    box.classList.add('open');
+    const done = v => { box.classList.remove('open'); $('#confirmOk').onclick = $('#confirmCancel').onclick = null; resolve(v); };
+    $('#confirmOk').onclick = () => done(true);
+    $('#confirmCancel').onclick = () => done(false);
+  });
 }
 function hydrateImages(root) {
   $$('img[data-img]', root).forEach(async img => {
@@ -347,10 +463,10 @@ function renderMeals() {
 
 $('#mealList').addEventListener('click', async e => {
   const b = e.target.closest('[data-del-meal]');
-  if (!b || !confirm('Supprimer ce repas ?')) return;
+  if (!b || !(await askConfirm('Supprimer ce repas ?'))) return;
   const m = db.meals.find(x => x.id === b.dataset.delMeal);
   db.meals = db.meals.filter(x => x !== m);
-  if (m && m.photoId) idb.del(m.photoId).catch(() => {});
+  if (m) delImage(m.photoId);
   save(); render(); toast('Repas supprimé');
 });
 
@@ -402,14 +518,54 @@ const FOOD_SCHEMA = {
   additionalProperties: false,
 };
 
-async function analyzeFood(dataUrl, hint) {
-  const key = getApiKey();
-  if (!key) throw new Error('NO_KEY');
-  const base64 = dataUrl.split(',')[1];
-  const prompt = `Tu es un nutritionniste expert. Analyse la photo de ce repas et estime, pour chaque aliment visible, la portion et ses valeurs nutritionnelles (kcal, protéines, glucides, lipides en grammes).
+const foodPrompt = hint => `Tu es un nutritionniste expert. Analyse la photo de ce repas et estime, pour chaque aliment visible, la portion et ses valeurs nutritionnelles (kcal, protéines, glucides, lipides en grammes).
 Base-toi sur la taille de l'assiette, des couverts et des aliments pour estimer les quantités. Compte les huiles, sauces et matières grasses de cuisson probables.
 Réponds en français.${hint ? `\nPrécisions de l'utilisateur : « ${hint} »` : ''}
 S'il n'y a pas de nourriture sur la photo, renvoie une liste "items" vide et explique-le dans "note".`;
+
+const SAMPLE_ERRORS = {
+  not_granted: "Autorise l'artifact à utiliser Claude pour analyser tes photos",
+  sampling_disabled: "Claude n'est pas disponible sur ce compte",
+  rate_limited: 'Trop de demandes, réessaie dans un moment',
+  image_rejected: 'Photo refusée : essaie un autre format (JPEG, PNG)',
+  refused: "Claude n'a pas pu analyser cette photo",
+  invalid_json: 'Réponse illisible, réessaie',
+  session_expired: 'Reconnecte-toi à Claude puis réessaie',
+};
+
+function cleanAnalysis(a) {
+  if (!a || !Array.isArray(a.items)) throw new Error('Réponse illisible, réessaie');
+  return {
+    dish: String(a.dish || 'Repas'),
+    confidence: String(a.confidence || 'moyenne'),
+    note: String(a.note || ''),
+    items: a.items.map(i => ({
+      name: String(i.name || 'Aliment'), quantity: String(i.quantity || ''),
+      kcal: +i.kcal || 0, protein: +i.protein || 0, carbs: +i.carbs || 0, fat: +i.fat || 0,
+    })),
+  };
+}
+
+const canAnalyze = () => !!sampleNs || !!getApiKey();
+
+async function analyzeFood(dataUrl, hint) {
+  // Dans claude.ai : passe par le compte Claude de l'utilisateur, sans clé API
+  if (sampleNs) {
+    const prompt = foodPrompt(hint) + `
+
+Réponds uniquement avec un objet JSON de cette forme :
+{"dish": "nom court du plat", "items": [{"name": "aliment", "quantity": "150 g", "kcal": 0, "protein": 0, "carbs": 0, "fat": 0}], "confidence": "faible" | "moyenne" | "élevée", "note": "une phrase : hypothèses faites ou conseil pour la prise de masse"}`;
+    try {
+      return cleanAnalysis(await sampleNs.json(prompt, { images: [dataUrlToBlob(dataUrl)] }));
+    } catch (e) {
+      throw new Error((e && SAMPLE_ERRORS[e.code]) || (e && e.message) || 'Analyse impossible, réessaie');
+    }
+  }
+  const key = getApiKey();
+  if (!key) throw new Error('NO_KEY');
+  const base64 = dataUrl.split(',')[1];
+  const prompt = foodPrompt(hint);
+
 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -445,13 +601,13 @@ S'il n'y a pas de nourriture sur la photo, renvoie une liste "items" vide et exp
   if (data.stop_reason === 'refusal') throw new Error("L'IA n'a pas pu analyser cette photo");
   if (data.stop_reason === 'max_tokens') throw new Error('Réponse tronquée, réessaie');
   const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
-  try { return JSON.parse(text); }
+  try { return cleanAnalysis(JSON.parse(text)); }
   catch { throw new Error('Réponse illisible, réessaie'); }
 }
 
 $('#analyzeBtn').addEventListener('click', async () => {
   if (!pendingPhoto) return;
-  if (!getApiKey()) {
+  if (!canAnalyze()) {
     toast('Ajoute ta clé API Claude dans les réglages ⚙️');
     return openSettings();
   }
@@ -500,8 +656,9 @@ function renderAnalysis() {
     </div>`;
   $('#cancelMeal').onclick = resetMealUpload;
   $('#saveMeal').onclick = async () => {
-    const photoId = 'meal-' + uid();
-    try { await idb.set(photoId, pendingPhoto.thumb); imgCache.set(photoId, pendingPhoto.thumb); } catch {}
+    $('#saveMeal').disabled = true;
+    let photoId = null;
+    try { photoId = await putImage(pendingPhoto.thumb, 'meal'); } catch {}
     addMeal({
       name: analysis.dish, type: $('#aType').value, items: analysis.items, photoId,
       kcal: +$('#aKcal').value, protein: +$('#aP').value, carbs: +$('#aC').value, fat: +$('#aF').value,
@@ -727,8 +884,8 @@ function openWorkout(existing) {
     save(); closeModal(); render();
     toast(`💪 Séance enregistrée — ${fmt(workoutVolume(w))} kg de volume`);
   };
-  if (existing) $('#wDelete').onclick = () => {
-    if (!confirm('Supprimer cette séance ?')) return;
+  if (existing) $('#wDelete').onclick = async () => {
+    if (!(await askConfirm('Supprimer cette séance ?'))) return;
     db.workouts = db.workouts.filter(x => x.id !== w.id);
     save(); closeModal(); render();
   };
@@ -806,7 +963,7 @@ function renderPhotos() {
       <div class="week-title"><b>Semaine ${n}</b><span>${shortDate(k)}${avg ? ' · ' + round(avg.avg, 1) + ' kg' : ''}</span></div>
       <div class="photo-grid">${groups.get(k).map(p => `
         <div class="ph ${compareSel.includes(p.id) ? 'sel' : ''}" data-photo="${p.id}">
-          <img data-img="${p.id}" alt="Photo du ${shortDate(p.date)}">
+          <img data-img="${p.img || p.id}" alt="Photo du ${shortDate(p.date)}">
           <span class="tag">${esc(p.label || shortDate(p.date))}</span>
           <button class="rm" data-rm-photo="${p.id}" aria-label="Supprimer la photo">✕</button>
         </div>`).join('')}</div>
@@ -822,7 +979,7 @@ async function renderCompare() {
   const ps = compareSel.map(id => db.photos.find(p => p.id === id)).filter(Boolean).sort((a, b) => a.date.localeCompare(b.date));
   if (ps.length !== 2) { compareSel = []; return box.classList.add('hidden'); }
   box.classList.remove('hidden');
-  const imgs = await Promise.all(ps.map(p => loadImg(p.id)));
+  const imgs = await Promise.all(ps.map(p => loadImg(p.img || p.id)));
   $('#compareView').innerHTML = ps.map((p, i) => {
     const w = weightAround(p.date);
     return `<figure><img src="${imgs[i] || ''}" alt=""><figcaption>${i ? 'Après' : 'Avant'} · ${shortDate(p.date)}${w ? ' · ' + round(w.kg, 1) + ' kg' : ''}</figcaption></figure>`;
@@ -842,12 +999,12 @@ $('#photoWeeks').addEventListener('click', e => {
 });
 $('#clearCompare').addEventListener('click', () => { compareSel = []; renderPhotos(); });
 
-function deletePhoto(id) {
-  if (!confirm('Supprimer cette photo ?')) return;
-  db.photos = db.photos.filter(p => p.id !== id);
+async function deletePhoto(id) {
+  if (!(await askConfirm('Supprimer cette photo ?'))) return;
+  const p = db.photos.find(x => x.id === id);
+  db.photos = db.photos.filter(x => x !== p);
   compareSel = compareSel.filter(x => x !== id);
-  idb.del(id).catch(() => {});
-  imgCache.delete(id);
+  if (p) delImage(p.img || p.id);
   save(); renderPhotos();
 }
 
@@ -867,10 +1024,10 @@ $('#bodyPhoto').addEventListener('change', async e => {
     </div>
     <button class="btn primary block" id="pSave">Enregistrer</button>`);
   $('#pSave').onclick = async () => {
-    const id = 'body-' + uid();
-    try { await idb.set(id, dataUrl); } catch { return toast('❌ Impossible de sauvegarder la photo'); }
-    imgCache.set(id, dataUrl);
-    db.photos.push({ id, date: $('#pDate').value || today(), label: $('#pLabel').value });
+    $('#pSave').disabled = true;
+    let img;
+    try { img = await putImage(dataUrl, 'body'); } catch { $('#pSave').disabled = false; return toast('❌ Impossible de sauvegarder la photo'); }
+    db.photos.push({ id: uid(), img, date: $('#pDate').value || today(), label: $('#pLabel').value });
     save(); closeModal(); renderBody();
     toast('📷 Photo ajoutée');
   };
@@ -887,9 +1044,9 @@ $('#addWeightBtn').addEventListener('click', () => {
   render();
   toast(`⚖️ ${kg} kg enregistré`);
 });
-$('#weightList').addEventListener('click', e => {
+$('#weightList').addEventListener('click', async e => {
   const b = e.target.closest('[data-del-weight]');
-  if (!b || !confirm('Supprimer cette pesée ?')) return;
+  if (!b || !(await askConfirm('Supprimer cette pesée ?'))) return;
   db.weights = db.weights.filter(w => w.id !== b.dataset.delWeight);
   save(); render();
 });
@@ -984,8 +1141,8 @@ function openSupp(s) {
     db.supps = s ? db.supps.map(x => x.id === s.id ? item : x) : [...db.supps, item];
     save(); closeModal(); render();
   };
-  if (s) $('#sDel').onclick = () => {
-    if (!confirm(`Supprimer « ${s.name} » ?`)) return;
+  if (s) $('#sDel').onclick = async () => {
+    if (!(await askConfirm(`Supprimer « ${s.name} » ?`))) return;
     db.supps = db.supps.filter(x => x.id !== s.id);
     save(); closeModal(); render();
   };
@@ -1010,7 +1167,8 @@ function openSettings() {
     <label class="field"><span>Poids objectif (kg)</span><input type="number" step="0.1" id="gW" value="${s.targetWeight ?? ''}" placeholder="80"></label>
     <button class="btn small block" id="gAuto" style="margin-bottom:20px">🧮 Calculer mes objectifs depuis mon poids</button>
 
-    <h3>🤖 Analyse des photos (IA Claude)</h3>
+    ${sampleNs ? `<h3>🤖 Analyse des photos</h3>
+    <p class="note" style="margin:-6px 0 20px">L'analyse passe par ton compte Claude : pas besoin de clé API.</p>` : `    <h3>🤖 Analyse des photos (IA Claude)</h3>
     <label class="field"><span>Clé API Anthropic</span><input type="password" id="gKey" value="${esc(key)}" placeholder="sk-ant-…" autocomplete="off"></label>
     <label class="field"><span>Modèle</span>
       <select id="gModel">
@@ -1019,19 +1177,19 @@ function openSettings() {
         <option value="claude-haiku-5-5">Claude Haiku 5.5 — le moins cher</option>
       </select>
     </label>
-    <p class="note" style="margin:-4px 0 20px">Crée une clé sur console.anthropic.com. Elle reste uniquement dans ce navigateur et sert seulement à appeler l'API Claude.</p>
+    <p class="note" style="margin:-4px 0 20px">Crée une clé sur console.anthropic.com. Elle reste uniquement dans ce navigateur et sert seulement à appeler l'API Claude.</p>`}
 
     <button class="btn primary block" id="gSave" style="margin-bottom:20px">✓ Enregistrer</button>
 
     <h3>💾 Mes données</h3>
-    <p class="note" style="margin:-6px 0 10px">Tout est stocké sur ton téléphone. Exporte régulièrement pour ne rien perdre.</p>
+    <p class="note" style="margin:-6px 0 10px">${cloud.col ? 'Tes données sont sauvegardées dans ton espace Claude. Tu peux aussi les exporter.' : 'Tout est stocké sur ton téléphone. Exporte régulièrement pour ne rien perdre.'}</p>
     <div class="btn-row" style="margin-bottom:10px">
       <button class="btn small" id="gExport">⬇️ Exporter</button>
       <label class="btn small" for="gImport">⬆️ Importer</label>
       <input type="file" id="gImport" accept="application/json" hidden>
     </div>
     <button class="btn small ghost danger block" id="gReset">Tout effacer</button>`);
-  $('#gModel').value = s.model;
+  if ($('#gModel')) $('#gModel').value = s.model;
 
   $('#gAuto').onclick = () => {
     const w = weightAround(today());
@@ -1046,32 +1204,47 @@ function openSettings() {
   $('#gSave').onclick = () => {
     Object.assign(db.settings, {
       kcal: +$('#gKcal').value || 3000, protein: +$('#gP').value || 0, carbs: +$('#gC').value || 0, fat: +$('#gF').value || 0,
-      targetWeight: $('#gW').value ? +$('#gW').value : null, model: $('#gModel').value,
+      targetWeight: $('#gW').value ? +$('#gW').value : null, model: $('#gModel') ? $('#gModel').value : s.model,
     });
-    setApiKey($('#gKey').value.trim());
+    if ($('#gKey')) setApiKey($('#gKey').value.trim());
     save(); closeModal(); render();
     toast('✓ Réglages enregistrés');
   };
   $('#gExport').onclick = exportData;
   $('#gImport').onchange = importData;
   $('#gReset').onclick = async () => {
-    if (!confirm('Effacer TOUTES les données ? Cette action est irréversible.')) return;
-    const ids = [...db.photos.map(p => p.id), ...db.meals.map(m => m.photoId).filter(Boolean)];
-    await Promise.all(ids.map(id => idb.del(id).catch(() => {})));
-    imgCache.clear();
+    if (!(await askConfirm('Effacer TOUTES les données ? Cette action est irréversible.', 'Tout effacer'))) return;
+    imageRefs().forEach(delImage);
     db = defaults(); save(); closeModal(); render();
     toast('Données effacées');
   };
 }
 
+const imageRefs = () => [...db.photos.map(p => p.img || p.id), ...db.meals.map(m => m.photoId)].filter(Boolean);
+
+async function refToDataUrl(ref) {
+  const src = await loadImg(ref);
+  if (!src || src.startsWith('data:')) return src;
+  try {
+    const blob = await (await fetch(src)).blob();
+    return await new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); });
+  } catch { return null; }
+}
+
 async function exportData() {
-  const ids = [...db.photos.map(p => p.id), ...db.meals.map(m => m.photoId).filter(Boolean)];
   const images = {};
-  for (const id of ids) { const v = await loadImg(id); if (v) images[id] = v; }
-  const blob = new Blob([JSON.stringify({ version: 1, exportedAt: new Date().toISOString(), data: db, images })], { type: 'application/json' });
+  for (const ref of imageRefs()) { const v = await refToDataUrl(ref); if (v) images[ref] = v; }
+  const json = JSON.stringify({ version: 1, exportedAt: new Date().toISOString(), data: db, images });
+  const filename = `mass-tracker-${today()}.json`;
+  const downloads = window.claude && window.claude.use ? await claude.use('downloads').catch(() => null) : null;
+  if (downloads) {
+    try { await downloads.save({ filename, data: new Blob([json], { type: 'application/json' }) }); toast('⬇️ Export enregistré'); }
+    catch (e) { if (e && e.code !== 'declined') toast('❌ Export impossible ici'); }
+    return;
+  }
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `mass-tracker-${today()}.json`;
+  a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+  a.download = filename;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   toast('⬇️ Export téléchargé');
@@ -1079,17 +1252,25 @@ async function exportData() {
 
 async function importData(e) {
   const file = e.target.files[0];
+  e.target.value = '';
   if (!file) return;
+  let json;
   try {
-    const json = JSON.parse(await file.text());
+    json = JSON.parse(await file.text());
     if (!json.data || !Array.isArray(json.data.meals)) throw new Error();
-    if (!confirm('Remplacer les données actuelles par cet export ?')) return;
-    for (const [id, v] of Object.entries(json.images || {})) { await idb.set(id, v); imgCache.set(id, v); }
-    db = Object.assign(defaults(), json.data);
-    db.settings = Object.assign(defaults().settings, db.settings);
-    save(); closeModal(); render();
-    toast('⬆️ Données importées');
-  } catch { toast('❌ Fichier invalide'); }
+  } catch { return toast('❌ Fichier invalide'); }
+  if (!(await askConfirm('Remplacer les données actuelles par cet export ?', 'Remplacer'))) return;
+  const data = normalize(json.data);
+  // Ré-enregistre chaque image dans le stockage courant et met à jour les références
+  const map = {};
+  for (const [ref, v] of Object.entries(json.images || {})) {
+    try { map[ref] = await putImage(v, 'img'); } catch {}
+  }
+  data.meals.forEach(m => { if (m.photoId) m.photoId = map[m.photoId] || null; });
+  data.photos = data.photos.map(p => ({ ...p, img: map[p.img || p.id] })).filter(p => p.img);
+  db = data;
+  save(); closeModal(); render();
+  toast('⬆️ Données importées');
 }
 
 // ───────────────────────── Modal ─────────────────────────
@@ -1119,3 +1300,4 @@ document.addEventListener('visibilitychange', () => {
 });
 
 render();
+initCloud();

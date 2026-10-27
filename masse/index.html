@@ -12,7 +12,7 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%232f7bff'/><text x='50' y='68' font-size='56' text-anchor='middle'>💪</text></svg>">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=Barlow+Condensed:wght@600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
 </head>
@@ -264,6 +264,16 @@
   <div class="sheet">
     <div class="sheet-head"><h2 id="modalTitle"></h2><button class="icon-btn" data-close aria-label="Fermer">✕</button></div>
     <div id="modalBody"></div>
+  </div>
+</div>
+
+<div class="modal confirm" id="confirm" role="alertdialog" aria-labelledby="confirmMsg">
+  <div class="confirm-box">
+    <p id="confirmMsg"></p>
+    <div class="btn-row">
+      <button class="btn" id="confirmCancel">Annuler</button>
+      <button class="btn primary danger-fill" id="confirmOk">Supprimer</button>
+    </div>
   </div>
 </div>
 
