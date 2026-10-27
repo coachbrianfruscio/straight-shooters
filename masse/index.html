@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#05070d">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Mass Tracker">
+  <title>Mass Tracker</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='24' fill='%232f7bff'/><text x='50' y='68' font-size='56' text-anchor='middle'>💪</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand"><div class="logo">💪</div>Mass Tracker</div>
+  <button class="icon-btn" id="openSettings" aria-label="Réglages">⚙️</button>
+</header>
+
+<main>
+
+  <!-- ═════════ DASHBOARD ═════════ -->
+  <section class="view active" id="view-dashboard">
+    <div class="datenav">
+      <button class="icon-btn" data-day="-1" aria-label="Jour précédent">‹</button>
+      <b id="dashDate"></b>
+      <button class="icon-btn" data-day="1" aria-label="Jour suivant">›</button>
+    </div>
+
+    <div class="card glow">
+      <div class="ring-wrap">
+        <div class="ring">
+          <svg viewBox="0 0 120 120">
+            <defs>
+              <linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#38d6ff"/>
+                <stop offset="100%" stop-color="#2f7bff"/>
+              </linearGradient>
+            </defs>
+            <circle class="track" cx="60" cy="60" r="52" fill="none" stroke-width="12"/>
+            <circle class="bar" id="ringBar" cx="60" cy="60" r="52" fill="none" stroke-width="12"
+                    stroke-dasharray="326.7" stroke-dashoffset="326.7"/>
+          </svg>
+          <div class="ring-center"><div><b id="kcalEaten">0</b><span id="kcalGoalLbl">/ 3000 kcal</span></div></div>
+        </div>
+        <div class="ring-side">
+          <div class="row"><span>🍽️ Repas</span><b id="kcalMeals">0</b></div>
+          <div class="row"><span>💊 Compléments</span><b id="kcalSupps">0</b></div>
+          <div class="row"><span>🎯 Restant</span><b id="kcalLeft">0</b></div>
+          <div class="pill" id="kcalStatus">C'est parti !</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Macros du jour</h3>
+      <div id="macroBars"></div>
+    </div>
+
+    <div class="grid-2" style="margin-bottom:14px">
+      <div class="card">
+        <div class="stat-label">Poids</div>
+        <div class="stat-value" id="dashWeight">—</div>
+        <div class="delta flat" id="dashWeightDelta">Ajoute une pesée</div>
+      </div>
+      <div class="card">
+        <div class="stat-label">Séances / sem.</div>
+        <div class="stat-value" id="dashWorkouts">0</div>
+        <div class="delta flat" id="dashVolume">0 kg soulevés</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Calories — 7 derniers jours</h3>
+      <div class="chart-box"><canvas id="chartCals"></canvas></div>
+    </div>
+
+    <div class="card">
+      <h3>Évolution du poids</h3>
+      <div class="chart-box"><canvas id="chartWeightMini"></canvas></div>
+    </div>
+  </section>
+
+  <!-- ═════════ REPAS ═════════ -->
+  <section class="view" id="view-meals">
+    <div class="section-head">
+      <div><h2>Repas</h2><p class="sub">Prends ton plat en photo, l'IA estime le reste.</p></div>
+    </div>
+
+    <div class="card glow">
+      <input type="file" id="mealPhoto" accept="image/*" capture="environment" hidden>
+      <label class="upload" for="mealPhoto" id="uploadZone">
+        <div class="big">📸</div>
+        <b>Photographier mon plat</b>
+        <span>ou choisir une photo de la galerie</span>
+      </label>
+
+      <div id="analysisBox" class="hidden">
+        <div class="preview">
+          <img id="mealPreview" alt="Aperçu du plat">
+          <div class="loader hidden" id="mealLoader"><div><div class="spinner"></div>Analyse en cours…</div></div>
+        </div>
+        <label class="field"><span>Précision (optionnel) — ex : « 200 g de riz, poulet grillé »</span>
+          <input type="text" id="mealHint" placeholder="Aide l'IA avec des détails">
+        </label>
+        <button class="btn primary block" id="analyzeBtn">✨ Analyser le plat</button>
+        <div id="analysisResult" class="hidden" style="margin-top:14px"></div>
+      </div>
+    </div>
+
+    <button class="btn block" id="manualMealBtn" style="margin-bottom:14px">✏️ Ajouter un repas manuellement</button>
+
+    <div class="datenav">
+      <button class="icon-btn" data-day="-1" aria-label="Jour précédent">‹</button>
+      <b class="dayLabel"></b>
+      <button class="icon-btn" data-day="1" aria-label="Jour suivant">›</button>
+    </div>
+    <div class="card">
+      <div class="section-head" style="margin-bottom:10px">
+        <h3 style="margin:0">Repas du jour</h3><span class="pill" id="mealsTotal">0 kcal</span>
+      </div>
+      <div class="list" id="mealList"></div>
+    </div>
+  </section>
+
+  <!-- ═════════ MUSCU ═════════ -->
+  <section class="view" id="view-workouts">
+    <div class="section-head">
+      <div><h2>Entraînements</h2><p class="sub">Exercices, séries, reps et charges.</p></div>
+      <button class="btn primary small" id="newWorkoutBtn">+ Séance</button>
+    </div>
+
+    <div class="grid-3" style="margin-bottom:14px">
+      <div class="card"><div class="stat-label">Séances</div><div class="stat-value" id="wTotal">0</div></div>
+      <div class="card"><div class="stat-label">Ce mois</div><div class="stat-value" id="wMonth">0</div></div>
+      <div class="card"><div class="stat-label">Série</div><div class="stat-value" id="wStreak">0<small>sem</small></div></div>
+    </div>
+
+    <div class="card">
+      <h3>Volume par semaine (kg)</h3>
+      <div class="chart-box"><canvas id="chartVolume"></canvas></div>
+    </div>
+
+    <div class="card">
+      <div class="section-head" style="margin-bottom:10px">
+        <h3 style="margin:0">Progression</h3>
+        <select id="exerciseSelect" style="width:auto;max-width:60%;padding:8px 12px;font-size:14px"></select>
+      </div>
+      <div class="chart-box"><canvas id="chartExercise"></canvas></div>
+      <p class="note">Charge max par séance et 1RM estimé (formule d'Epley).</p>
+    </div>
+
+    <div class="card">
+      <h3>Historique</h3>
+      <div class="list" id="workoutList"></div>
+    </div>
+  </section>
+
+  <!-- ═════════ CORPS ═════════ -->
+  <section class="view" id="view-body">
+    <div class="section-head">
+      <div><h2>Corps</h2><p class="sub">Poids et photos, semaine par semaine.</p></div>
+    </div>
+
+    <div class="card glow">
+      <h3>Nouvelle pesée</h3>
+      <div class="inline">
+        <label class="field"><span>Poids (kg)</span><input type="number" step="0.1" inputmode="decimal" id="weightInput" placeholder="75.0"></label>
+        <label class="field"><span>Date</span><input type="date" id="weightDate"></label>
+      </div>
+      <button class="btn primary block" id="addWeightBtn">Enregistrer</button>
+    </div>
+
+    <div class="grid-3" style="margin-bottom:14px">
+      <div class="card"><div class="stat-label">Départ</div><div class="stat-value" id="bStart">—</div></div>
+      <div class="card"><div class="stat-label">Actuel</div><div class="stat-value" id="bNow">—</div></div>
+      <div class="card"><div class="stat-label">Gain</div><div class="stat-value" id="bGain">—</div></div>
+    </div>
+
+    <div class="card">
+      <div class="section-head" style="margin-bottom:10px">
+        <h3 style="margin:0">Courbe de poids</h3>
+        <div class="chips" id="weightRange">
+          <button class="chip" data-range="30">1 mois</button>
+          <button class="chip active" data-range="90">3 mois</button>
+          <button class="chip" data-range="0">Tout</button>
+        </div>
+      </div>
+      <div class="chart-box tall"><canvas id="chartWeight"></canvas></div>
+      <p class="note">Points = pesées · ligne pleine = moyenne de la semaine · pointillés = objectif.</p>
+    </div>
+
+    <div class="card">
+      <h3>Récap hebdo</h3>
+      <div style="overflow-x:auto"><table class="weeks" id="weekTable"></table></div>
+    </div>
+
+    <div class="card">
+      <div class="section-head" style="margin-bottom:12px">
+        <h3 style="margin:0">Photos du corps</h3>
+        <input type="file" id="bodyPhoto" accept="image/*" hidden>
+        <label for="bodyPhoto" class="btn primary small">+ Photo</label>
+      </div>
+      <div id="compareBox" class="hidden" style="margin-bottom:14px">
+        <div class="compare" id="compareView"></div>
+        <button class="btn small ghost block" id="clearCompare" style="margin-top:8px">Fermer la comparaison</button>
+      </div>
+      <p class="note" style="margin:0 0 12px">Touche 2 photos pour les comparer côte à côte.</p>
+      <div id="photoWeeks"></div>
+    </div>
+
+    <div class="card">
+      <h3>Historique des pesées</h3>
+      <div class="list" id="weightList"></div>
+    </div>
+  </section>
+
+  <!-- ═════════ COMPLÉMENTS ═════════ -->
+  <section class="view" id="view-supps">
+    <div class="section-head">
+      <div><h2>Compléments</h2><p class="sub">Coche ce que tu prends : les calories s'ajoutent au jour.</p></div>
+      <button class="btn primary small" id="newSuppBtn">+ Ajouter</button>
+    </div>
+
+    <div class="datenav">
+      <button class="icon-btn" data-day="-1" aria-label="Jour précédent">‹</button>
+      <b class="dayLabel"></b>
+      <button class="icon-btn" data-day="1" aria-label="Jour suivant">›</button>
+    </div>
+
+    <div class="grid-2" style="margin-bottom:14px">
+      <div class="card"><div class="stat-label">Pris</div><div class="stat-value" id="sTaken">0/0</div></div>
+      <div class="card"><div class="stat-label">Apport</div><div class="stat-value" id="sKcal">0<small>kcal</small></div><div class="delta flat" id="sProt">0 g protéines</div></div>
+    </div>
+
+    <div class="card">
+      <div id="suppList"></div>
+    </div>
+
+    <div class="card">
+      <h3>Régularité — 14 derniers jours</h3>
+      <div class="chart-box"><canvas id="chartSupps"></canvas></div>
+    </div>
+  </section>
+
+</main>
+
+<nav class="nav">
+  <button class="active" data-view="dashboard"><span class="ic">📊</span>Accueil</button>
+  <button data-view="meals"><span class="ic">🍽️</span>Repas</button>
+  <button data-view="workouts"><span class="ic">🏋️</span>Muscu</button>
+  <button data-view="body"><span class="ic">⚖️</span>Corps</button>
+  <button data-view="supps"><span class="ic">💊</span>Compléments</button>
+</nav>
+
+<!-- ═════════ MODALS ═════════ -->
+<div class="modal" id="modal">
+  <div class="sheet">
+    <div class="sheet-head"><h2 id="modalTitle"></h2><button class="icon-btn" data-close aria-label="Fermer">✕</button></div>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "name": "Mass Tracker",
+  "short_name": "Mass Tracker",
+  "description": "Suivi de prise de masse : repas, macros, muscu, poids et compléments.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#05070d",
+  "theme_color": "#05070d",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
