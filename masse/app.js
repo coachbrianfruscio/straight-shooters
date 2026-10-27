@@ -39,7 +39,7 @@ const KEY_API = 'massTracker.apiKey';
 const defaults = () => ({
   settings: {
     kcal: 4250, protein: 210, carbs: 615, fat: 105, targetWeight: null, model: 'claude-opus-5-5',
-    height: 204, age: 19, sex: 'homme', activity: 1.725, surplus: 400, profileV: 0,
+    height: 204, age: 19, sex: 'homme', activity: 1.725, surplus: 400, profileV: 0, targetWeight: 110,
   },
   meals: [],
   workouts: [],
@@ -64,12 +64,23 @@ function computeGoals(st, kg) {
 }
 
 // Profil de départ (2,04 m, 104 kg, 19 ans) appliqué une seule fois
+// Photos de départ fournies par l'utilisateur (injectées uniquement dans la version Artifact)
+const BASELINE_PHOTOS = window.MT_BASELINE || [];
+
 function applyProfileOnce() {
   const st = db.settings;
-  if (st.profileV >= 1) return;
-  if (!db.weights.length) db.weights.push({ id: uid(), date: today(), kg: 104 });
-  const g = computeGoals(st, weightAround(today()).kg);
-  Object.assign(st, { kcal: g.kcal, protein: g.protein, carbs: g.carbs, fat: g.fat, profileV: 1 });
+  if (st.profileV >= 2) return;
+  if (st.profileV < 1) {
+    if (!db.weights.length) db.weights.push({ id: uid(), date: today(), kg: 104 });
+    const g = computeGoals(st, weightAround(today()).kg);
+    Object.assign(st, { kcal: g.kcal, protein: g.protein, carbs: g.carbs, fat: g.fat });
+  }
+  // v2 : objectif 110 kg et photos de départ
+  if (!st.targetWeight) st.targetWeight = 110;
+  for (const p of BASELINE_PHOTOS) {
+    if (!db.photos.some(x => x.img === p.img)) db.photos.push({ id: uid(), img: p.img, date: p.date, label: p.label });
+  }
+  st.profileV = 2;
   save();
 }
 
@@ -396,6 +407,8 @@ function renderDashboard() {
     $('#dashWeightDelta').textContent = 'Ajoute une pesée';
   }
 
+  renderGoal();
+
   // Séances de la semaine
   const ws = weekStart(currentDay);
   const wk = db.workouts.filter(x => x.date >= ws && x.date <= addDays(ws, 6));
@@ -420,6 +433,27 @@ function renderDashboard() {
   // Mini graph poids (30 derniers jours)
   const ws30 = sortedWeights().filter(x => x.date >= addDays(currentDay, -60) && x.date <= currentDay);
   chart('chartWeightMini', weightChartConfig(ws30, false));
+}
+
+function renderGoal() {
+  const target = +db.settings.targetWeight;
+  const ws = sortedWeights();
+  $('#goalCard').classList.toggle('hidden', !target || !ws.length);
+  if (!target || !ws.length) return;
+  const start = +ws[0].kg, now = +ws[ws.length - 1].kg;
+  const pct = target > start ? Math.max(0, Math.min(100, (now - start) / (target - start) * 100)) : 100;
+  const left = round(target - now, 1);
+  $('#goalTarget').textContent = round(target, 1);
+  $('#goalBar').style.width = pct + '%';
+  $('#goalStart').textContent = `Départ ${round(start, 1)} kg`;
+  $('#goalLeft').textContent = left > 0 ? `encore ${left} kg` : 'Objectif atteint 🎉';
+  // Rythme réel sur ~4 semaines, sinon rythme visé de 0,375 kg/sem
+  const ref = weightAround(addDays(today(), -28));
+  const weeks = ref ? (parse(ws[ws.length - 1].date) - parse(ref.date)) / 6048e5 : 0;
+  const pace = ref && weeks >= 1 ? (now - ref.kg) / weeks : null;
+  $('#goalPace').textContent = pace == null ? 'Vise +0,25 à 0,5 kg/sem' : `${pace >= 0 ? '+' : ''}${round(pace, 2)} kg/sem`;
+  const p = pace && pace > 0.05 ? pace : 0.375;
+  $('#goalEta').textContent = left > 0 ? `≈ ${parse(addDays(today(), Math.round(left / p * 7))).toLocaleDateString('fr-FR', { month: 'short', year: 'numeric' })}` : '';
 }
 
 function weightChartConfig(list, withWeekly) {
@@ -740,7 +774,7 @@ const COMMON_EXERCISES = [
   'Développé couché', 'Développé incliné haltères', 'Développé militaire', 'Squat', 'Soulevé de terre',
   'Soulevé de terre roumain', 'Tractions', 'Rowing barre', 'Rowing haltère', 'Tirage vertical', 'Dips',
   'Curl biceps', 'Curl marteau', 'Extension triceps poulie', 'Barre au front', 'Élévations latérales',
-  'Presse à cuisses', 'Fentes', 'Leg curl', 'Leg extension', 'Hip thrust', 'Mollets debout', 'Écarté poulie',
+  'Presse à cuisses', 'Fentes', 'Leg curl', 'Leg extension', 'Hip thrust', 'Mollets debout', 'Écarté poulie', 'Shrugs', 'Tirage poitrine',
 ];
 const exerciseNames = () => [...new Set([...db.workouts.flatMap(w => w.exercises.map(e => e.name)), ...COMMON_EXERCISES])];
 
@@ -757,6 +791,7 @@ function renderWorkouts() {
   while (weeks.has(wk)) { streak++; wk = addDays(wk, -7); }
   $('#wStreak').innerHTML = `${streak}<small>sem</small>`;
 
+  renderProgram();
   $('#workoutList').innerHTML = ws.length ? ws.slice(0, 20).map(w => `
     <div class="item" data-edit-workout="${w.id}" style="cursor:pointer;align-items:flex-start">
       <div class="thumb">🏋️</div>
@@ -814,18 +849,59 @@ function renderExerciseChart() {
 $('#exerciseSelect').addEventListener('change', renderExerciseChart);
 
 $('#newWorkoutBtn').addEventListener('click', () => openWorkout());
+$('#programList').addEventListener('click', e => {
+  const b = e.target.closest('[data-start-prog]');
+  if (b) openWorkout(null, PROGRAM[+b.dataset.startProg]);
+});
 $('#workoutList').addEventListener('click', e => {
   const it = e.target.closest('[data-edit-workout]');
   if (it) openWorkout(db.workouts.find(w => w.id === it.dataset.editWorkout));
 });
 
-function openWorkout(existing) {
-  const w = existing ? JSON.parse(JSON.stringify(existing)) : { id: uid(), date: today(), name: '', exercises: [{ name: '', sets: [{ reps: '', kg: '' }] }] };
+// Programme adapté : largeur d'épaules, dos, haut des pecs, + jambes pour la masse globale.
+// [exercice, séries, reps]
+const PROGRAM = [
+  { day: 'Lundi', name: 'Push — Épaules & pecs', ex: [['Développé militaire', 4, 8], ['Développé incliné haltères', 4, 10], ['Élévations latérales', 4, 15], ['Dips', 3, 10], ['Extension triceps poulie', 3, 12]] },
+  { day: 'Mardi', name: 'Pull — Dos & largeur', ex: [['Tractions', 4, 8], ['Rowing barre', 4, 8], ['Tirage vertical', 3, 12], ['Shrugs', 3, 12], ['Curl biceps', 3, 12]] },
+  { day: 'Jeudi', name: 'Jambes', ex: [['Squat', 4, 8], ['Soulevé de terre roumain', 3, 10], ['Presse à cuisses', 3, 12], ['Leg curl', 3, 12], ['Mollets debout', 4, 15]] },
+  { day: 'Samedi', name: 'Haut du corps — Largeur', ex: [['Développé couché', 4, 8], ['Rowing haltère', 3, 10], ['Élévations latérales', 4, 15], ['Écarté poulie', 3, 12], ['Curl marteau', 3, 12]] },
+];
+
+function lastExercise(name, excludeId) {
+  const prev = [...db.workouts].sort((a, b) => b.date.localeCompare(a.date)).find(x => x.id !== excludeId && x.exercises.some(e => e.name === name));
+  return prev && prev.exercises.find(e => e.name === name);
+}
+
+function renderProgram() {
+  const ws = weekStart(today());
+  $('#programList').innerHTML = PROGRAM.map((p, i) => {
+    const done = db.workouts.some(w => w.name === p.name && w.date >= ws);
+    return `<div class="item">
+      <div class="thumb">${done ? '✅' : '🏋️'}</div>
+      <div class="meta">
+        <span class="prog-day">${p.day}</span>
+        <b>${esc(p.name)}</b>
+        <small>${p.ex.map(e => `${e[0]} ${e[1]}×${e[2]}`).join(' · ')}</small>
+      </div>
+      <button class="btn small ${done ? '' : 'primary'}" data-start-prog="${i}">${done ? 'Refaire' : 'Démarrer'}</button>
+    </div>`;
+  }).join('');
+}
+
+function openWorkout(existing, template) {
+  const id = uid();
+  const w = existing ? JSON.parse(JSON.stringify(existing))
+    : template ? {
+      id, date: today(), name: template.name,
+      // Reprend les charges de la dernière fois, sinon les séries × reps du programme
+      exercises: template.ex.map(([name, sets, reps]) => {
+        const prev = lastExercise(name, id);
+        return { name, sets: prev ? prev.sets.map(s => ({ reps: s.reps, kg: s.kg })) : [...Array(sets)].map(() => ({ reps, kg: '' })) };
+      }),
+    }
+    : { id, date: today(), name: '', exercises: [{ name: '', sets: [{ reps: '', kg: '' }] }] };
   // Reprend les charges de la dernière séance du même nom
-  const last = name => {
-    const prev = [...db.workouts].sort((a, b) => b.date.localeCompare(a.date)).find(x => x.id !== w.id && x.exercises.some(e => e.name === name));
-    return prev && prev.exercises.find(e => e.name === name);
-  };
+  const last = name => lastExercise(name, w.id);
 
   openModal(existing ? 'Modifier la séance' : 'Nouvelle séance', `
     <div class="inline">

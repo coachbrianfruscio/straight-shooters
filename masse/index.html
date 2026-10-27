@@ -58,6 +58,15 @@
       </div>
     </div>
 
+    <div class="card" id="goalCard">
+      <div class="section-head" style="margin-bottom:10px">
+        <h3 style="margin:0">Objectif <span id="goalTarget">110</span> kg</h3>
+        <span class="pill" id="goalPace">—</span>
+      </div>
+      <div class="bar-bg" style="height:12px"><div class="bar-fill" id="goalBar" style="width:0;background:linear-gradient(90deg,var(--cyan),var(--blue))"></div></div>
+      <div class="goal-row"><span id="goalStart">—</span><b id="goalLeft">—</b><span id="goalEta">—</span></div>
+    </div>
+
     <div class="card">
       <h3>Macros du jour</h3>
       <div id="macroBars"></div>
@@ -140,6 +149,12 @@
       <div class="card"><div class="stat-label">Séances</div><div class="stat-value" id="wTotal">0</div></div>
       <div class="card"><div class="stat-label">Ce mois</div><div class="stat-value" id="wMonth">0</div></div>
       <div class="card"><div class="stat-label">Série</div><div class="stat-value" id="wStreak">0<small>sem</small></div></div>
+    </div>
+
+    <div class="card glow">
+      <h3>Ton programme</h3>
+      <p class="sub" style="margin-top:-6px">4 séances par semaine en plus du basket. Priorités vues sur tes photos : largeur d'épaules, épaisseur du dos, haut des pecs.</p>
+      <div class="list" id="programList"></div>
     </div>
 
     <div class="card">
