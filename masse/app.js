@@ -37,7 +37,10 @@ const KEY = 'massTracker.v1';
 const KEY_API = 'massTracker.apiKey';
 
 const defaults = () => ({
-  settings: { kcal: 3000, protein: 160, carbs: 380, fat: 90, targetWeight: null, model: 'claude-opus-5-5' },
+  settings: {
+    kcal: 4250, protein: 210, carbs: 615, fat: 105, targetWeight: null, model: 'claude-opus-5-5',
+    height: 204, age: 19, sex: 'homme', activity: 1.725, surplus: 400, profileV: 0,
+  },
   meals: [],
   workouts: [],
   weights: [],
@@ -49,6 +52,26 @@ const defaults = () => ({
   ],
   suppLog: {},
 });
+
+// Besoins : Mifflin-St Jeor × activité + surplus de prise de masse.
+// Protéines 2 g/kg, lipides 1 g/kg, le reste en glucides.
+function computeGoals(st, kg) {
+  const bmr = 10 * kg + 6.25 * st.height - 5 * st.age + (st.sex === 'femme' ? -161 : 5);
+  const tdee = bmr * st.activity;
+  const kcal = Math.round((tdee + st.surplus) / 50) * 50;
+  const protein = Math.round(kg * 2 / 5) * 5, fat = Math.round(kg / 5) * 5;
+  return { bmr: Math.round(bmr), tdee: Math.round(tdee), kcal, protein, fat, carbs: Math.max(0, Math.round((kcal - protein * 4 - fat * 9) / 4 / 5) * 5) };
+}
+
+// Profil de départ (2,04 m, 104 kg, 19 ans) appliqué une seule fois
+function applyProfileOnce() {
+  const st = db.settings;
+  if (st.profileV >= 1) return;
+  if (!db.weights.length) db.weights.push({ id: uid(), date: today(), kg: 104 });
+  const g = computeGoals(st, weightAround(today()).kg);
+  Object.assign(st, { kcal: g.kcal, protein: g.protein, carbs: g.carbs, fat: g.fat, profileV: 1 });
+  save();
+}
 
 const normalize = d => {
   const out = Object.assign(defaults(), d || {});
@@ -120,8 +143,10 @@ async function initCloud() {
           }
           db = normalize(merged);
           cloud.col = col;
+          applyProfileOnce();
         } else {
           cloud.col = col;
+          applyProfileOnce();
           cloudFlush(); // premier lancement : envoie les données locales (ou par défaut)
         }
       }
@@ -1164,8 +1189,27 @@ function openSettings() {
       <label class="field"><span>Glucides (g)</span><input type="number" id="gC" value="${s.carbs}"></label>
       <label class="field"><span>Lipides (g)</span><input type="number" id="gF" value="${s.fat}"></label>
     </div>
-    <label class="field"><span>Poids objectif (kg)</span><input type="number" step="0.1" id="gW" value="${s.targetWeight ?? ''}" placeholder="80"></label>
-    <button class="btn small block" id="gAuto" style="margin-bottom:20px">🧮 Calculer mes objectifs depuis mon poids</button>
+    <label class="field"><span>Poids objectif (kg)</span><input type="number" step="0.1" id="gW" value="${s.targetWeight ?? ''}" placeholder="112"></label>
+
+    <h3>👤 Mon profil</h3>
+    <div class="inline">
+      <label class="field"><span>Taille (cm)</span><input type="number" inputmode="numeric" id="gH" value="${s.height}"></label>
+      <label class="field"><span>Âge</span><input type="number" inputmode="numeric" id="gAge" value="${s.age}"></label>
+    </div>
+    <div class="inline">
+      <label class="field"><span>Sexe</span><select id="gSex"><option value="homme">Homme</option><option value="femme">Femme</option></select></label>
+      <label class="field"><span>Surplus (kcal)</span><input type="number" inputmode="numeric" step="50" id="gSur" value="${s.surplus}"></label>
+    </div>
+    <label class="field"><span>Activité</span>
+      <select id="gAct">
+        <option value="1.375">1 à 3 entraînements / semaine</option>
+        <option value="1.55">3 à 5 entraînements / semaine</option>
+        <option value="1.725">6 à 7 entraînements / semaine</option>
+        <option value="1.9">2 fois par jour</option>
+      </select>
+    </label>
+    <button class="btn small block" id="gAuto">🧮 Recalculer mes objectifs</button>
+    <p class="note" id="gCalc" style="margin:8px 0 20px"></p>
 
     ${sampleNs ? `<h3>🤖 Analyse des photos</h3>
     <p class="note" style="margin:-6px 0 20px">L'analyse passe par ton compte Claude : pas besoin de clé API.</p>` : `    <h3>🤖 Analyse des photos (IA Claude)</h3>
@@ -1191,20 +1235,28 @@ function openSettings() {
     <button class="btn small ghost danger block" id="gReset">Tout effacer</button>`);
   if ($('#gModel')) $('#gModel').value = s.model;
 
-  $('#gAuto').onclick = () => {
+  $('#gSex').value = s.sex;
+  $('#gAct').value = String(s.activity);
+  const profileForm = () => ({ height: +$('#gH').value || s.height, age: +$('#gAge').value || s.age, sex: $('#gSex').value, activity: +$('#gAct').value, surplus: +$('#gSur').value || 0 });
+  const explain = () => {
     const w = weightAround(today());
-    if (!w) return toast("Ajoute d'abord une pesée dans « Corps »");
-    // Prise de masse propre : ~40 kcal/kg, 2 g prot/kg, 1 g lip/kg, le reste en glucides
-    const kcal = Math.round(w.kg * 40 / 50) * 50;
-    const p = Math.round(w.kg * 2), f = Math.round(w.kg * 1);
-    $('#gKcal').value = kcal; $('#gP').value = p; $('#gF').value = f;
-    $('#gC').value = Math.max(0, Math.round((kcal - p * 4 - f * 9) / 4));
-    toast('Objectifs calculés pour ' + round(w.kg, 1) + ' kg');
+    if (!w) { $('#gCalc').textContent = "Ajoute une pesée dans « Corps » pour calculer tes besoins."; return null; }
+    const g = computeGoals(profileForm(), w.kg);
+    $('#gCalc').textContent = `Pour ${round(w.kg, 1)} kg : métabolisme de base ${fmt(g.bmr)} kcal, dépense totale ${fmt(g.tdee)} kcal, + surplus = ${fmt(g.kcal)} kcal/jour. Vise +0,25 à 0,5 kg par semaine.`;
+    return g;
+  };
+  explain();
+  ['#gH', '#gAge', '#gSex', '#gAct', '#gSur'].forEach(id => $(id).addEventListener('input', explain));
+  $('#gAuto').onclick = () => {
+    const g = explain();
+    if (!g) return toast("Ajoute d'abord une pesée dans « Corps »");
+    $('#gKcal').value = g.kcal; $('#gP').value = g.protein; $('#gF').value = g.fat; $('#gC').value = g.carbs;
+    toast('Objectifs recalculés — pense à enregistrer');
   };
   $('#gSave').onclick = () => {
     Object.assign(db.settings, {
       kcal: +$('#gKcal').value || 3000, protein: +$('#gP').value || 0, carbs: +$('#gC').value || 0, fat: +$('#gF').value || 0,
-      targetWeight: $('#gW').value ? +$('#gW').value : null, model: $('#gModel') ? $('#gModel').value : s.model,
+      targetWeight: $('#gW').value ? +$('#gW').value : null, ...profileForm(), model: $('#gModel') ? $('#gModel').value : s.model,
     });
     if ($('#gKey')) setApiKey($('#gKey').value.trim());
     save(); closeModal(); render();
@@ -1299,5 +1351,6 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && currentDay > today()) { currentDay = today(); render(); }
 });
 
+applyProfileOnce();
 render();
 initCloud();
