@@ -408,6 +408,7 @@ function renderDashboard() {
   }
 
   renderGoal();
+  renderQuick();
 
   // Séances de la semaine
   const ws = weekStart(currentDay);
@@ -434,6 +435,55 @@ function renderDashboard() {
   const ws30 = sortedWeights().filter(x => x.date >= addDays(currentDay, -60) && x.date <= currentDay);
   chart('chartWeightMini', weightChartConfig(ws30, false));
 }
+
+// Séance du programme prévue aujourd'hui, sinon la prochaine
+const PROGRAM_DAYS = { Lundi: 1, Mardi: 2, Mercredi: 3, Jeudi: 4, Vendredi: 5, Samedi: 6, Dimanche: 0 };
+function todaysProgram() {
+  const wd = new Date().getDay();
+  const ws = weekStart(today());
+  const notDone = p => !db.workouts.some(w => w.name === p.name && w.date >= ws);
+  const byDist = [...PROGRAM].sort((a, b) => ((PROGRAM_DAYS[a.day] - wd + 7) % 7) - ((PROGRAM_DAYS[b.day] - wd + 7) % 7));
+  return byDist.find(notDone) || byDist[0];
+}
+
+function renderQuick() {
+  const w = weightAround(today());
+  $('#quickWeightSub').textContent = w ? `${round(w.kg, 1)} kg` : 'Ajouter';
+  $('#quickWorkoutSub').textContent = todaysProgram().name.split(' — ')[0];
+
+  const taken = new Set(db.suppLog[currentDay] || []);
+  $('#dashSuppsCard').classList.toggle('hidden', !db.supps.length);
+  $('#dashSuppsCount').textContent = `${db.supps.filter(s => taken.has(s.id)).length}/${db.supps.length}`;
+  $('#dashSupps').innerHTML = db.supps.map(s => `<button class="chip ${taken.has(s.id) ? 'active' : ''}" data-dash-supp="${s.id}">${esc(s.name)}</button>`).join('');
+}
+
+$('#dashSupps').addEventListener('click', e => {
+  const b = e.target.closest('[data-dash-supp]');
+  if (!b) return;
+  const log = new Set(db.suppLog[currentDay] || []);
+  log.has(b.dataset.dashSupp) ? log.delete(b.dataset.dashSupp) : log.add(b.dataset.dashSupp);
+  db.suppLog[currentDay] = [...log];
+  save(); render();
+});
+
+$('#quickWorkout').addEventListener('click', () => openWorkout(null, todaysProgram()));
+
+$('#quickWeight').addEventListener('click', () => {
+  const last = weightAround(today());
+  openModal('Pesée du jour', `
+    <label class="field"><span>Poids (kg)</span><input type="number" step="0.1" inputmode="decimal" id="qwKg" value="${last ? round(last.kg, 1) : ''}"></label>
+    <button class="btn primary block" id="qwSave">Enregistrer</button>`);
+  const input = $('#qwKg');
+  input.focus(); input.select();
+  $('#qwSave').onclick = () => {
+    const kg = parseFloat(String(input.value).replace(',', '.'));
+    if (!(kg > 20 && kg < 400)) return toast('Entre un poids valide');
+    db.weights = db.weights.filter(w => w.date !== today());
+    db.weights.push({ id: uid(), date: today(), kg });
+    save(); closeModal(); render();
+    toast(`⚖️ ${kg} kg enregistré`);
+  };
+});
 
 function renderGoal() {
   const target = +db.settings.targetWeight;
@@ -546,7 +596,10 @@ $('#mealPhoto').addEventListener('change', async e => {
     $('#analysisBox').classList.remove('hidden');
     $('#analysisResult').classList.add('hidden');
     $('#analyzeBtn').classList.remove('hidden');
+    $('#analyzeBtn').textContent = '✨ Analyser le plat';
     $('#mealHint').value = '';
+    if (currentView !== 'meals') show('meals');
+    if (canAnalyze()) $('#analyzeBtn').click(); // analyse directe, sans étape en plus
   } catch (err) { toast('❌ ' + err.message); }
 });
 
@@ -675,7 +728,7 @@ $('#analyzeBtn').addEventListener('click', async () => {
   try {
     analysis = await analyzeFood(pendingPhoto.full, $('#mealHint').value.trim());
     renderAnalysis();
-    $('#analyzeBtn').classList.add('hidden');
+    $('#analyzeBtn').textContent = '↻ Réanalyser avec ma précision';
   } catch (err) {
     toast('❌ ' + err.message);
   } finally {

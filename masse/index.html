@@ -33,6 +33,12 @@
       <button class="icon-btn" data-day="1" aria-label="Jour suivant">›</button>
     </div>
 
+    <div class="quick">
+      <label class="quick-btn primary" for="mealPhoto"><span class="qi">📸</span><b>Repas</b><small>Photo du plat</small></label>
+      <button class="quick-btn" id="quickWeight"><span class="qi">⚖️</span><b>Pesée</b><small id="quickWeightSub">Ajouter</small></button>
+      <button class="quick-btn" id="quickWorkout"><span class="qi">💪</span><b>Séance</b><small id="quickWorkoutSub">Du jour</small></button>
+    </div>
+
     <div class="card glow">
       <div class="ring-wrap">
         <div class="ring">
@@ -56,6 +62,13 @@
           <div class="pill" id="kcalStatus">C'est parti !</div>
         </div>
       </div>
+    </div>
+
+    <div class="card" id="dashSuppsCard">
+      <div class="section-head" style="margin-bottom:10px">
+        <h3 style="margin:0">Compléments</h3><span class="pill" id="dashSuppsCount">0/0</span>
+      </div>
+      <div class="supp-chips" id="dashSupps"></div>
     </div>
 
     <div class="card" id="goalCard">
