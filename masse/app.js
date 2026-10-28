@@ -39,7 +39,7 @@ const KEY_API = 'massTracker.apiKey';
 const defaults = () => ({
   settings: {
     kcal: 4250, protein: 210, carbs: 615, fat: 105, targetWeight: null, model: 'claude-opus-5-5',
-    height: 204, age: 19, sex: 'homme', activity: 1.725, surplus: 400, profileV: 0, targetWeight: 110,
+    height: 204, age: 19, sex: 'homme', activity: 1.725, phase: 'seche', surplus: -500, profileV: 0, targetWeight: 100,
   },
   meals: [],
   workouts: [],
@@ -53,13 +53,22 @@ const defaults = () => ({
   suppLog: {},
 });
 
-// Besoins : Mifflin-St Jeor × activité + surplus de prise de masse.
-// Protéines 2 g/kg, lipides 1 g/kg, le reste en glucides.
+// Phases : ajustement calorique par défaut, protéines et lipides en g/kg, rythme visé (kg/sem).
+// En sèche, protéines hautes (2,3 g/kg) pour garder le muscle malgré le déficit.
+const PHASES = {
+  seche: { label: 'Sèche', adj: -500, prot: 2.3, fat: 0.8, pace: -0.5, paceText: 'Vise −0,4 à −0,6 kg/sem' },
+  recompo: { label: 'Recomposition', adj: 0, prot: 2.2, fat: 0.9, pace: 0, paceText: 'Poids stable' },
+  masse: { label: 'Prise de masse', adj: 400, prot: 2, fat: 1, pace: 0.375, paceText: 'Vise +0,25 à 0,5 kg/sem' },
+};
+const phase = () => PHASES[db.settings.phase] || PHASES.masse;
+
+// Besoins : Mifflin-St Jeor × activité + ajustement de la phase. Le reste des calories en glucides.
 function computeGoals(st, kg) {
+  const ph = PHASES[st.phase] || PHASES.masse;
   const bmr = 10 * kg + 6.25 * st.height - 5 * st.age + (st.sex === 'femme' ? -161 : 5);
   const tdee = bmr * st.activity;
   const kcal = Math.round((tdee + st.surplus) / 50) * 50;
-  const protein = Math.round(kg * 2 / 5) * 5, fat = Math.round(kg / 5) * 5;
+  const protein = Math.round(kg * ph.prot / 5) * 5, fat = Math.round(kg * ph.fat / 5) * 5;
   return { bmr: Math.round(bmr), tdee: Math.round(tdee), kcal, protein, fat, carbs: Math.max(0, Math.round((kcal - protein * 4 - fat * 9) / 4 / 5) * 5) };
 }
 
@@ -69,15 +78,12 @@ const BASELINE_PHOTOS = window.MT_BASELINE || [];
 
 function applyProfileOnce() {
   const st = db.settings;
-  if (st.profileV >= 2) return;
-  if (st.profileV < 1) {
-    if (!db.weights.length) db.weights.push({ id: uid(), date: today(), kg: 104 });
-    const g = computeGoals(st, weightAround(today()).kg);
-    Object.assign(st, { kcal: g.kcal, protein: g.protein, carbs: g.carbs, fat: g.fat });
-  }
-  // v2 : objectif 110 kg et photos de départ
-  if (!st.targetWeight) st.targetWeight = 110;
-  st.profileV = 2;
+  if (st.profileV >= 3) return;
+  if (!db.weights.length) db.weights.push({ id: uid(), date: today(), kg: 104 });
+  // v3 : on commence par une sèche, protéines hautes, objectif 100 kg
+  Object.assign(st, { phase: 'seche', surplus: PHASES.seche.adj, targetWeight: 100, phaseStart: today() });
+  const g = computeGoals(st, weightAround(today()).kg);
+  Object.assign(st, { kcal: g.kcal, protein: g.protein, carbs: g.carbs, fat: g.fat, profileV: 3 });
   save();
 }
 
@@ -375,7 +381,12 @@ function renderDashboard() {
   const pct = Math.min(1, total.kcal / (s.kcal || 1));
   $('#ringBar').style.strokeDashoffset = 326.7 * (1 - pct);
   const status = $('#kcalStatus');
-  status.textContent = pct >= 1 ? '🔥 Objectif atteint !' : pct >= .75 ? '💪 Presque !' : pct > 0 ? '🍗 Continue à manger' : "C'est parti !";
+  const protLeft = Math.round(s.protein - total.protein);
+  if (s.phase === 'seche') {
+    status.textContent = pct > 1.05 ? '⚠️ Au-dessus de ta limite' : protLeft > 0 ? `🥩 Encore ${protLeft} g de protéines` : '✅ Protéines OK';
+  } else {
+    status.textContent = pct >= 1 ? '🔥 Objectif atteint !' : pct >= .75 ? '💪 Presque !' : pct > 0 ? '🍗 Continue à manger' : "C'est parti !";
+  }
 
   const macros = [
     ['Protéines', total.protein, s.protein, 'var(--prot)'],
@@ -501,20 +512,26 @@ function renderGoal() {
   const ws = sortedWeights();
   $('#goalCard').classList.toggle('hidden', !target || !ws.length);
   if (!target || !ws.length) return;
-  const start = +ws[0].kg, now = +ws[ws.length - 1].kg;
-  const pct = target > start ? Math.max(0, Math.min(100, (now - start) / (target - start) * 100)) : 100;
-  const left = round(target - now, 1);
+  // Départ = première pesée de la phase en cours
+  const since = db.settings.phaseStart || ws[0].date;
+  const startW = ws.find(w => w.date >= since) || ws[ws.length - 1];
+  const start = +startW.kg, now = +ws[ws.length - 1].kg;
+  const dir = target >= start ? 1 : -1;
+  const pct = target === start ? 100 : Math.max(0, Math.min(100, (now - start) / (target - start) * 100));
+  const left = round((target - now) * dir, 1);
+  $('#goalPhase').textContent = phase().label;
   $('#goalTarget').textContent = round(target, 1);
   $('#goalBar').style.width = pct + '%';
   $('#goalStart').textContent = `Départ ${round(start, 1)} kg`;
-  $('#goalLeft').textContent = left > 0 ? `encore ${left} kg` : 'Objectif atteint 🎉';
+  $('#goalLeft').textContent = left > 0 ? `encore ${left} kg ${dir < 0 ? 'à perdre' : 'à prendre'}` : 'Objectif atteint 🎉';
   // Rythme réel sur ~4 semaines, sinon rythme visé de 0,375 kg/sem
   const ref = weightAround(addDays(today(), -28));
   const weeks = ref ? (parse(ws[ws.length - 1].date) - parse(ref.date)) / 6048e5 : 0;
   const pace = ref && weeks >= 1 ? (now - ref.kg) / weeks : null;
-  $('#goalPace').textContent = pace == null ? 'Vise +0,25 à 0,5 kg/sem' : `${pace >= 0 ? '+' : ''}${round(pace, 2)} kg/sem`;
-  const p = pace && pace > 0.05 ? pace : 0.375;
-  $('#goalEta').textContent = left > 0 ? `≈ ${parse(addDays(today(), Math.round(left / p * 7))).toLocaleDateString('fr-FR', { month: 'short', year: 'numeric' })}` : '';
+  $('#goalPace').textContent = pace == null ? phase().paceText : `${pace >= 0 ? '+' : ''}${round(pace, 2)} kg/sem`;
+  // Rythme dans le bon sens, sinon le rythme visé de la phase
+  const p = pace && pace * dir > 0.05 ? Math.abs(pace) : Math.abs(phase().pace) || 0.375;
+  $('#goalEta').textContent = left > 0 ? `≈ ${parse(addDays(today(), Math.round(left / p * 7))).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })}` : '';
 }
 
 function weightChartConfig(list, withWeekly) {
@@ -635,7 +652,7 @@ const FOOD_SCHEMA = {
       },
     },
     confidence: { type: 'string', enum: ['faible', 'moyenne', 'élevée'] },
-    note: { type: 'string', description: "Une phrase courte : hypothèses faites ou conseil pour la prise de masse" },
+    note: { type: 'string', description: "Une phrase courte : hypothèses faites ou conseil pour l'objectif de l'utilisateur" },
   },
   required: ['dish', 'items', 'confidence', 'note'],
   additionalProperties: false,
@@ -677,7 +694,7 @@ async function analyzeFood(dataUrl, hint) {
     const prompt = foodPrompt(hint) + `
 
 Réponds uniquement avec un objet JSON de cette forme :
-{"dish": "nom court du plat", "items": [{"name": "aliment", "quantity": "150 g", "kcal": 0, "protein": 0, "carbs": 0, "fat": 0}], "confidence": "faible" | "moyenne" | "élevée", "note": "une phrase : hypothèses faites ou conseil pour la prise de masse"}`;
+{"dish": "nom court du plat", "items": [{"name": "aliment", "quantity": "150 g", "kcal": 0, "protein": 0, "carbs": 0, "fat": 0}], "confidence": "faible" | "moyenne" | "élevée", "note": "une phrase : hypothèses faites ou conseil pour une ${phase().label.toLowerCase()}"}`;
     try {
       return cleanAnalysis(await sampleNs.json(prompt, { images: [dataUrlToBlob(dataUrl)] }));
     } catch (e) {
@@ -1351,8 +1368,11 @@ function openSettings() {
     </div>
     <div class="inline">
       <label class="field"><span>Sexe</span><select id="gSex"><option value="homme">Homme</option><option value="femme">Femme</option></select></label>
-      <label class="field"><span>Surplus (kcal)</span><input type="number" inputmode="numeric" step="50" id="gSur" value="${s.surplus}"></label>
+      <label class="field"><span>Ajustement (kcal)</span><input type="number" inputmode="numeric" step="50" id="gSur" value="${s.surplus}"></label>
     </div>
+    <label class="field"><span>Phase</span>
+      <select id="gPhase">${Object.entries(PHASES).map(([k, p]) => `<option value="${k}">${p.label} (${p.adj > 0 ? '+' : ''}${p.adj} kcal, prot. ${String(p.prot).replace('.', ',')} g/kg)</option>`).join('')}</select>
+    </label>
     <label class="field"><span>Activité</span>
       <select id="gAct">
         <option value="1.375">1 à 3 entraînements / semaine</option>
@@ -1390,12 +1410,14 @@ function openSettings() {
 
   $('#gSex').value = s.sex;
   $('#gAct').value = String(s.activity);
-  const profileForm = () => ({ height: +$('#gH').value || s.height, age: +$('#gAge').value || s.age, sex: $('#gSex').value, activity: +$('#gAct').value, surplus: +$('#gSur').value || 0 });
+  $('#gPhase').value = s.phase;
+  $('#gPhase').addEventListener('change', () => { $('#gSur').value = PHASES[$('#gPhase').value].adj; explain(); });
+  const profileForm = () => ({ height: +$('#gH').value || s.height, age: +$('#gAge').value || s.age, sex: $('#gSex').value, activity: +$('#gAct').value, surplus: +$('#gSur').value || 0, phase: $('#gPhase').value });
   const explain = () => {
     const w = weightAround(today());
     if (!w) { $('#gCalc').textContent = "Ajoute une pesée dans « Corps » pour calculer tes besoins."; return null; }
     const g = computeGoals(profileForm(), w.kg);
-    $('#gCalc').textContent = `Pour ${round(w.kg, 1)} kg : métabolisme de base ${fmt(g.bmr)} kcal, dépense totale ${fmt(g.tdee)} kcal, + surplus = ${fmt(g.kcal)} kcal/jour. Vise +0,25 à 0,5 kg par semaine.`;
+    $('#gCalc').textContent = `Pour ${round(w.kg, 1)} kg : métabolisme de base ${fmt(g.bmr)} kcal, dépense totale ${fmt(g.tdee)} kcal → ${fmt(g.kcal)} kcal/jour, ${g.protein} g de protéines. ${PHASES[profileForm().phase].paceText}.`;
     return g;
   };
   explain();
@@ -1409,7 +1431,8 @@ function openSettings() {
   $('#gSave').onclick = () => {
     Object.assign(db.settings, {
       kcal: +$('#gKcal').value || 3000, protein: +$('#gP').value || 0, carbs: +$('#gC').value || 0, fat: +$('#gF').value || 0,
-      targetWeight: $('#gW').value ? +$('#gW').value : null, ...profileForm(), model: $('#gModel') ? $('#gModel').value : s.model,
+      targetWeight: $('#gW').value ? +$('#gW').value : null, ...profileForm(),
+      phaseStart: $('#gPhase').value !== s.phase ? today() : s.phaseStart, model: $('#gModel') ? $('#gModel').value : s.model,
     });
     if ($('#gKey')) setApiKey($('#gKey').value.trim());
     save(); closeModal(); render();
