@@ -348,6 +348,8 @@ table.weeks td:not(:first-child), table.weeks th:not(:first-child) { text-align:
 .supp-chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .supp-chips .chip.active::before { content: '✓ '; }
 
+.dash-photos { grid-template-columns: repeat(4, 1fr); gap: 6px; }
+
 /* ── Confirmation ── */
 .modal.confirm { z-index: 70; align-items: center; padding: 16px; }
 .confirm-box { width: 100%; max-width: 360px; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; animation: up .2s ease; }

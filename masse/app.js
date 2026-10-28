@@ -77,9 +77,6 @@ function applyProfileOnce() {
   }
   // v2 : objectif 110 kg et photos de départ
   if (!st.targetWeight) st.targetWeight = 110;
-  for (const p of BASELINE_PHOTOS) {
-    if (!db.photos.some(x => x.img === p.img)) db.photos.push({ id: uid(), img: p.img, date: p.date, label: p.label });
-  }
   st.profileV = 2;
   save();
 }
@@ -446,7 +443,19 @@ function todaysProgram() {
   return byDist.find(notDone) || byDist[0];
 }
 
+function renderDashPhotos() {
+  const photos = allPhotos().sort((a, b) => b.date.localeCompare(a.date));
+  const lastWeek = photos.length ? weekStart(photos[0].date) : null;
+  const recent = photos.filter(p => weekStart(p.date) === lastWeek).slice(0, 4);
+  $('#dashPhotosDate').textContent = lastWeek ? 'Semaine du ' + shortDate(lastWeek) : '';
+  $('#dashPhotos').innerHTML = recent.length
+    ? recent.map(p => `<div class="ph" data-goto-body><img data-img="${p.img || p.id}" alt="Photo ${esc(p.label || '')}"><span class="tag">${esc(p.label || shortDate(p.date))}</span></div>`).join('')
+    : '<div class="empty" style="grid-column:1/-1">Ajoute ta première photo avec « + Photo ».</div>';
+  hydrateImages($('#dashPhotos'));
+}
+
 function renderQuick() {
+  renderDashPhotos();
   const w = weightAround(today());
   $('#quickWeightSub').textContent = w ? `${round(w.kg, 1)} kg` : 'Ajouter';
   $('#quickWorkoutSub').textContent = todaysProgram().name.split(' — ')[0];
@@ -465,6 +474,8 @@ $('#dashSupps').addEventListener('click', e => {
   db.suppLog[currentDay] = [...log];
   save(); render();
 });
+
+$('#dashPhotos').addEventListener('click', e => { if (e.target.closest('[data-goto-body]')) show('body'); });
 
 $('#quickWorkout').addEventListener('click', () => openWorkout(null, todaysProgram()));
 
@@ -1104,8 +1115,17 @@ function renderBody() {
   renderPhotos();
 }
 
+// Photos enregistrées + photos de départ (toujours affichées, sauf si masquées)
+function allPhotos() {
+  const hidden = db.settings.hiddenBaseline || [];
+  const base = BASELINE_PHOTOS
+    .filter(p => !hidden.includes(p.img) && !db.photos.some(x => x.img === p.img))
+    .map(p => ({ id: 'base-' + p.img.slice(2), img: p.img, date: p.date, label: p.label, baseline: true }));
+  return [...db.photos, ...base];
+}
+
 function renderPhotos() {
-  const photos = [...db.photos].sort((a, b) => b.date.localeCompare(a.date));
+  const photos = allPhotos().sort((a, b) => b.date.localeCompare(a.date));
   const groups = new Map();
   photos.forEach(p => { const k = weekStart(p.date); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(p); });
   const weeks = [...groups.keys()];
@@ -1130,7 +1150,7 @@ function renderPhotos() {
 async function renderCompare() {
   const box = $('#compareBox');
   if (compareSel.length !== 2) return box.classList.add('hidden');
-  const ps = compareSel.map(id => db.photos.find(p => p.id === id)).filter(Boolean).sort((a, b) => a.date.localeCompare(b.date));
+  const ps = compareSel.map(id => allPhotos().find(p => p.id === id)).filter(Boolean).sort((a, b) => a.date.localeCompare(b.date));
   if (ps.length !== 2) { compareSel = []; return box.classList.add('hidden'); }
   box.classList.remove('hidden');
   const imgs = await Promise.all(ps.map(p => loadImg(p.img || p.id)));
@@ -1155,11 +1175,15 @@ $('#clearCompare').addEventListener('click', () => { compareSel = []; renderPhot
 
 async function deletePhoto(id) {
   if (!(await askConfirm('Supprimer cette photo ?'))) return;
-  const p = db.photos.find(x => x.id === id);
-  db.photos = db.photos.filter(x => x !== p);
+  const p = allPhotos().find(x => x.id === id);
   compareSel = compareSel.filter(x => x !== id);
-  if (p) delImage(p.img || p.id);
-  save(); renderPhotos();
+  if (p && p.baseline) {
+    db.settings.hiddenBaseline = [...(db.settings.hiddenBaseline || []), p.img];
+  } else {
+    db.photos = db.photos.filter(x => x !== p);
+    if (p) delImage(p.img || p.id);
+  }
+  save(); render();
 }
 
 $('#bodyPhoto').addEventListener('change', async e => {
@@ -1182,7 +1206,7 @@ $('#bodyPhoto').addEventListener('change', async e => {
     let img;
     try { img = await putImage(dataUrl, 'body'); } catch { $('#pSave').disabled = false; return toast('❌ Impossible de sauvegarder la photo'); }
     db.photos.push({ id: uid(), img, date: $('#pDate').value || today(), label: $('#pLabel').value });
-    save(); closeModal(); renderBody();
+    save(); closeModal(); render();
     toast('📷 Photo ajoutée');
   };
 });
